@@ -22,8 +22,7 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.head_dim = head_dim
         self.qk_proj = nn.Sequential(
-            nn.LayerNorm(head_dim),
-            nn.Linear(head_dim, 2 * head_dim, bias=False)
+            nn.LayerNorm(head_dim), nn.Linear(head_dim, 2 * head_dim, bias=False)
         )
         self.rotary = RotaryEmbedding(head_dim)
         self.ffn = FFN(emb_dim, ffn_factor)
@@ -40,7 +39,14 @@ class MultiHeadAttention(nn.Module):
 
 
 class PTR(nn.Module):
-    def __init__(self, emb_dim: int, vocab_size: int, head_dim: int, num_attn_layers: int, ffn_factor: int):
+    def __init__(
+        self,
+        emb_dim: int,
+        vocab_size: int,
+        head_dim: int,
+        num_attn_layers: int,
+        ffn_factor: int,
+    ):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, emb_dim)
         self.mhas = nn.ModuleList(
