@@ -38,4 +38,4 @@ def build_tokenizer():
 
 if __name__ == "__main__":
     tokenizer = build_tokenizer()
-    tokenizer.save_pretrained("tokenizer_ptr")
+    tokenizer.push_to_hub("ptr", commit_message="Add tokenizer")
