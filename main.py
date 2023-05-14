@@ -93,12 +93,12 @@ def _main(rank, world_size, args, config, run_path):
 
     if config["optimizer"]["ZeRO"]:
         optimizer = ZeroRedundancyOptimizer(
-            model.parameters(),
+            ddp_model.parameters(),
             optimizer_class=torch.optim.AdamW,
             lr=config["scheduler"]["lr"],
         )
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config["scheduler"]["lr"])
+        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
 
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
