@@ -3,6 +3,27 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from rotary_embedding_torch import RotaryEmbedding
+from transformers import PreTrainedModel, PretrainedConfig
+
+
+class PTRConfig(PretrainedConfig):
+    model_type = "PTR"
+
+    def __init__(
+        self,
+        emb_dim: int,
+        vocab_size: int,
+        head_dim: int,
+        num_attn_layers: int,
+        ffn_factor: int,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.emb_dim = emb_dim
+        self.vocab_size = vocab_size
+        self.head_dim = head_dim
+        self.num_attn_layers = num_attn_layers
+        self.ffn_factor = ffn_factor
 
 
 class FFN(nn.Sequential):
@@ -38,24 +59,19 @@ class MultiHeadAttention(nn.Module):
         return x + self.ffn(attn)
 
 
-class PTR(nn.Module):
-    def __init__(
-        self,
-        emb_dim: int,
-        vocab_size: int,
-        head_dim: int,
-        num_attn_layers: int,
-        ffn_factor: int,
-    ):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, emb_dim)
+class PTR(PreTrainedModel):
+    config_class = PTRConfig
+
+    def __init__(self, config: PTRConfig):
+        super().__init__(config)
+        self.embedding = nn.Embedding(config.vocab_size, config.emb_dim)
         self.mhas = nn.ModuleList(
             [
-                MultiHeadAttention(emb_dim, head_dim, ffn_factor)
-                for _ in range(num_attn_layers)
+                MultiHeadAttention(config.emb_dim, config.head_dim, config.ffn_factor)
+                for _ in range(config.num_attn_layers)
             ]
         )
-        self.out_proj = nn.Linear(emb_dim, vocab_size)
+        self.out_proj = nn.Linear(config.emb_dim, config.vocab_size)
 
     def forward(self, token_ids: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
         emb = self.embedding(token_ids)

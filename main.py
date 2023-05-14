@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 import datetime
 
 from dataset import NextTokenDataset
-from model import PTR
+from model import PTR, PTRConfig
 from trainer import Trainer
 
 
@@ -80,25 +80,26 @@ def _main(rank, world_size, args, config, run_path):
         context_len=config["dataset"]["context_len"],
     )
 
-    model: torch.nn.Module = PTR(
+    model_config = PTRConfig(
         emb_dim=config["model"]["embedding_dim"],
         vocab_size=tokenizer.vocab_size,
         head_dim=config["model"]["head_dim"],
         num_attn_layers=config["model"]["num_attention_layers"],
         ffn_factor=config["model"]["ffn_factor"],
     )
+    model = PTR(model_config)
     model = model.to(rank)
     model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
 
     if config["optimizer"]["ZeRO"]:
         optimizer = ZeroRedundancyOptimizer(
-            model.parameters(),
+            ddp_model.parameters(),
             optimizer_class=torch.optim.AdamW,
             lr=config["scheduler"]["lr"],
         )
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config["scheduler"]["lr"])
+        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
 
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
@@ -149,8 +150,10 @@ if __name__ == "__main__":
     WORLD_SIZE = torch.cuda.device_count()
     try:
         mp.spawn(
-            main, args=(WORLD_SIZE, args, config, run_path), nprocs=WORLD_SIZE, join=True
+            main,
+            args=(WORLD_SIZE, args, config, run_path),
+            nprocs=WORLD_SIZE,
+            join=True,
         )
     except KeyboardInterrupt:
         print(f"Catching KeyboardInterrupt on main process. Terminating...")
-    
