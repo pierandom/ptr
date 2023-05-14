@@ -58,7 +58,7 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def main(rank, world_size, args, config, run_path):
+def _main(rank, world_size, args, config, run_path):
     setup(rank, world_size, config)
 
     tokenizer = AutoTokenizer.from_pretrained("pierandom/ptr")
@@ -130,7 +130,14 @@ def main(rank, world_size, args, config, run_path):
 
     trainer.train()
 
-    cleanup()
+
+def main(rank, *args, **kwargs):
+    try:
+        _main(rank, *args, **kwargs)
+    except KeyboardInterrupt:
+        print(f"Catching KeyboardInterrupt on process {rank}. Terminating...")
+    finally:
+        cleanup()
 
 
 if __name__ == "__main__":
@@ -140,6 +147,10 @@ if __name__ == "__main__":
     run_path, config = init_run(args.resume_run_id)
 
     WORLD_SIZE = torch.cuda.device_count()
-    mp.spawn(
-        main, args=(WORLD_SIZE, args, config, run_path), nprocs=WORLD_SIZE, join=True
-    )
+    try:
+        mp.spawn(
+            main, args=(WORLD_SIZE, args, config, run_path), nprocs=WORLD_SIZE, join=True
+        )
+    except KeyboardInterrupt:
+        print(f"Catching KeyboardInterrupt on main process. Terminating...")
+    
