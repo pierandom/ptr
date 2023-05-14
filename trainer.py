@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 from time import perf_counter
 from datetime import timedelta
@@ -116,6 +117,23 @@ class Trainer:
         train_loss = (
             self.train_loss_metric.compute() * self.config["grad_accumulation_steps"]
         )
+        if self.rank == 0:
+            with self.path["metrics"].open("a") as metrics_file:
+                fieldnames = [
+                    "grad_update_time/train_time",
+                    "tokens_processed",
+                    "train_loss",
+                    "lr",
+                ]
+                writer = csv.DictWriter(metrics_file, fieldnames=fieldnames)
+                writer.writerow(
+                    {
+                        "grad_update_time/train_time": f"{grad_update_time}/{train_time}",
+                        "tokens_processed": self.tokens_processed,
+                        "train_loss": train_loss,
+                        "lr": self.scheduler.get_last_lr()[0],
+                    }
+                )
         self._print(
             f"Time: {grad_update_time}/{train_time} - "
             f"Updates: {self.iterations//self.config['grad_accumulation_steps']:,} - "
@@ -123,6 +141,19 @@ class Trainer:
             f"Train Loss: {train_loss:.6f} - "
             f"LR: {self.scheduler.get_last_lr()[0]:E}"
         )
+
+    def _log_preds(self, inputs: torch.Tensor):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = self.ddp_model(inputs, is_causal=True)
+        pred_token_ids = torch.argmax(logits, dim=-1)
+        preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
+        with self.path["predictions"].open("a") as preds_file:
+            preds_file.write(
+                "############# "
+                f"Iteration {self.iterations//self.config['grad_accumulation_steps']}"
+                " #############"
+                f"\n{preds}"
+            )
 
     def train(self):
         self.start_train_time = self.start_grad_update_time = perf_counter()
@@ -145,6 +176,7 @@ class Trainer:
                     self._update_state()
 
                     self._log_stats()
+                    self._log_preds(inputs)
 
                 if (
                     self.iterations
