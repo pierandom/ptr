@@ -1,5 +1,3 @@
-import json
-
 from tokenizers import (
     models,
     pre_tokenizers,

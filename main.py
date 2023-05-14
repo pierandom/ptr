@@ -1,5 +1,8 @@
 from argparse import ArgumentParser
 import os
+import shutil
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 import yaml
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -7,16 +10,39 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from transformers import AutoTokenizer
+import datetime
 
 from dataset import NextTokenDataset
 from model import PTR
 from trainer import Trainer
 
+
 def parse_args():
     parser = ArgumentParser()
+    parser.add_argument("--resume_run_id", type=str, help="Run id to resume")
 
     args = parser.parse_args()
     return args
+
+
+def init_run(run_id: Optional[str]) -> Tuple[Path, Dict]:
+    runs_dir = Path("runs")
+    if run_id:
+        run_path = runs_dir / run_id
+    else:
+        now = datetime.datetime.now()
+        run_path = runs_dir / now.strftime("%Y%m%d_%H%M%S")
+
+    run_path.mkdir(parents=True, exist_ok=True)
+
+    if not run_id:
+        shutil.copy("config.yaml", str(run_path))
+
+    config_path = run_path / "config.yaml"
+    with config_path.open() as config_file:
+        config = yaml.safe_load(config_file)
+
+    return run_path, config
 
 
 def setup(rank, world_size, config):
@@ -31,10 +57,11 @@ def setup(rank, world_size, config):
 def cleanup():
     dist.destroy_process_group()
 
-def main(rank, world_size, args, config):
+
+def main(rank, world_size, args, config, run_path):
     setup(rank, world_size, config)
 
-    tokenizer = AutoTokenizer.from_pretrained("tokenizer_ptr")
+    tokenizer = AutoTokenizer.from_pretrained("pierandom/ptr")
 
     train_dataset = NextTokenDataset(
         split="train",
@@ -94,8 +121,13 @@ def main(rank, world_size, args, config):
         scheduler=scheduler,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
+        run_path=run_path,
         config=config["training"],
     )
+    if args.resume_run_id:
+        trainer._print("Loading checkpoint...")
+        trainer.load_ckpt()
+
     trainer.train()
 
     cleanup()
@@ -103,9 +135,11 @@ def main(rank, world_size, args, config):
 
 if __name__ == "__main__":
     args = parse_args()
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-    with open("config.yaml") as config_file:
-        config = yaml.safe_load(config_file)
+    run_path, config = init_run(args.resume_run_id)
 
     WORLD_SIZE = torch.cuda.device_count()
-    mp.spawn(main, args=(WORLD_SIZE, args, config), nprocs=WORLD_SIZE, join=True)
+    mp.spawn(
+        main, args=(WORLD_SIZE, args, config, run_path), nprocs=WORLD_SIZE, join=True
+    )

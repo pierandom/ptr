@@ -33,10 +33,10 @@ class NextTokenDataset(IterableDataset):
         self.context_len = context_len
         self._state = dict(shard_id=0, processed_examples=0, seed=seed)
 
-    def state(self):
+    def state_dict(self):
         return self._state
 
-    def load_state(self, state):
+    def load_state_dict(self, state):
         self._state = state
 
     def _train_iter(self):
