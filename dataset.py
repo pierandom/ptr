@@ -1,6 +1,7 @@
 import json
 import random
 import itertools
+from typing import Optional
 import torch
 from torch.utils.data import IterableDataset
 
@@ -21,6 +22,8 @@ class NextTokenDataset(IterableDataset):
         tokenizer,
         batch_size: int,
         context_len: int,
+        shuffle: bool = False,
+        max_examples: Optional[int] = None,
         buffer_factor: int = 100,
         seed: int = 42,
     ):
@@ -31,6 +34,8 @@ class NextTokenDataset(IterableDataset):
         self.batch_size = batch_size
         self.buffer_size = batch_size * buffer_factor
         self.context_len = context_len
+        self.shuffle = shuffle
+        self.max_examples = max_examples
         self._state = dict(shard_id=0, processed_examples=0, seed=seed)
 
     def state_dict(self):
@@ -42,7 +47,7 @@ class NextTokenDataset(IterableDataset):
     def _train_iter(self):
         start_shard_id = self._state["shard_id"]
         iterator = open(f"/mnt/reginald/thepile/train/{start_shard_id:02}.jsonl")
-        itertools.islice(iterator, self._state["processed_examples"], None)
+        iterator = itertools.islice(iterator, self._state["processed_examples"], None)
         for shard_id in range(start_shard_id, 30):
             for example in iterator:
                 self._state["processed_examples"] += 1
@@ -52,12 +57,17 @@ class NextTokenDataset(IterableDataset):
             self._state["shard_id"] = shard_id
         self._state["shard_id"] = 0
         self._state["seed"] += 1
+    
+    def _val_test_iter(self):
+        iterator = open(f"/mnt/reginald/thepile/{self.split}.jsonl")
+        iterator = itertools.islice(iterator, self.max_examples)
+        return iterator
 
     def _iter(self):
         if self.split == "train":
             return self._train_iter()
         else:
-            return open(f"/mnt/reginald/thepile/{self.split}.jsonl")
+            return self._val_test_iter()
 
     def _example(self):
         token_ids = []
@@ -75,7 +85,8 @@ class NextTokenDataset(IterableDataset):
         for example in self._example():
             buffer.append(example)
             if len(buffer) == self.buffer_size:
-                random.shuffle(buffer)
+                if self.shuffle:
+                    random.shuffle(buffer)
                 yield buffer
                 buffer = []
 
