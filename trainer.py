@@ -55,6 +55,10 @@ class Trainer:
             self.rank, self.world_size, log_path=metrics_path / "val_loss.csv"
         )
 
+    @property
+    def grad_steps(self):
+        return self.iterations / self.config["grad_accumulation_steps"]
+
     def print(self, string: str):
         if self.rank == 0:
             print(string)
@@ -67,6 +71,7 @@ class Trainer:
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict(),
                 "train_dataset": self.train_dataset.state_dict(),
+                "train_loss_metric": self.train_loss_metric.state(),
                 "iterations": self.iterations,
                 "tokens_processed": self.tokens_processed,
                 "tot_train_time": self.tot_train_time.seconds + train_time.seconds,
@@ -79,6 +84,7 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.scheduler.load_state_dict(ckpt["scheduler"])
         self.train_dataset.load_state_dict(ckpt["train_dataset"])
+        self.train_loss_metric.load_state(ckpt["train_loss_metric"])
         self.iterations = ckpt["iterations"]
         self.tokens_processed = ckpt["tokens_processed"]
         self.tot_train_time = timedelta(seconds=ckpt["tot_train_time"])
@@ -95,7 +101,9 @@ class Trainer:
             loss = loss / self.config["grad_accumulation_steps"]
 
         self.scaler.scale(loss).backward()
-        self.train_loss_metric.update(loss.item())
+        self.train_loss_metric.update(
+            loss.item() * self.config["grad_accumulation_steps"]
+        )
 
     def _update_state(self):
         self.scaler.unscale_(self.optimizer)
@@ -119,15 +127,13 @@ class Trainer:
         grad_update_time, train_time = self._compute_elapsed_time()
 
         # metric compute method needs to be called by all processes
-        train_loss = (
-            self.train_loss_metric.compute() * self.config["grad_accumulation_steps"]
-        )
+        train_loss = self.train_loss_metric.compute()
         summary = (
             f"Time: {grad_update_time}/{train_time} - "
-            f"Updates: {self.iterations//self.config['grad_accumulation_steps']:,} - "
+            f"Updates: {int(self.grad_steps):,} - "
             f"Tokens processed: {self.tokens_processed:,} - "
             f"Train Loss: {train_loss:.6f} - "
-            f"LR: {self.scheduler.get_last_lr()[0]:E}"
+            f"LR: {self.scheduler.get_last_lr()[0]:e}"
         )
         self.print(summary)
 
@@ -141,15 +147,15 @@ class Trainer:
             with self.path["predictions"].open("a") as preds_file:
                 preds_file.write(
                     "############# "
-                    f"Iteration {self.iterations//self.config['grad_accumulation_steps']}"
+                    f"Iteration {int(self.grad_steps)}"
                     " #############"
                     f"\n{preds}\n"
                 )
 
     def _log_stats(self):
-        self.train_loss_metric.log(self.iterations / self.config["grad_accumulation_steps"])
-        if self.iterations % self.config["validate_every_n_steps"] == 0:
-            self.val_loss_metric.log(self.iterations / self.config["grad_accumulation_steps"])
+        self.train_loss_metric.log(int(self.grad_steps))
+        if self.grad_steps % self.config["validate_every_n_steps"] == 0:
+            self.val_loss_metric.log(int(self.grad_steps))
 
     def train(self):
         self.start_train_time = self.start_grad_update_time = perf_counter()
@@ -171,35 +177,14 @@ class Trainer:
 
                     self._summary()
 
-                if (
-                    self.iterations
-                    % (
-                        self.config["log_preds_every_n_steps"]
-                        * self.config["grad_accumulation_steps"]
-                    )
-                    == 0
-                ):
+                if self.grad_steps % self.config["log_preds_every_n_steps"] == 0:
                     self._log_preds(inputs)
 
-                if (
-                    self.iterations
-                    % (
-                        self.config["save_every_n_steps"]
-                        * self.config["grad_accumulation_steps"]
-                    )
-                    == 0
-                ):
+                if self.grad_steps % self.config["save_every_n_steps"] == 0:
                     self.print("Saving checkpoint...")
                     self.save_ckpt()
 
-                if (
-                    self.iterations
-                    % (
-                        self.config["validate_every_n_steps"]
-                        * self.config["grad_accumulation_steps"]
-                    )
-                    == 0
-                ):
+                if self.grad_steps % self.config["validate_every_n_steps"] == 0:
                     self.print("Validating...")
                     start_val_time = perf_counter()
                     self.validate()
@@ -213,14 +198,7 @@ class Trainer:
                     self._log_stats()
                     self.start_grad_update_time = perf_counter()
 
-                if (
-                    self.iterations
-                    % (
-                        self.config["grad_accumulation_steps"]
-                        * self.config["reset_metrics_every_n_steps"]
-                    )
-                    == 0
-                ):
+                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
                     self.train_loss_metric.reset()
 
     @torch.no_grad()
