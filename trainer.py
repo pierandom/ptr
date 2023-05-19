@@ -38,25 +38,30 @@ class Trainer:
         self.val_dataset = val_dataset
         self.config = config
         self.scaler = GradScaler()
-        self.train_loss_metric = AverageMetric(self.rank, self.world_size)
         self.iterations = 0
         self.tokens_processed = 0
         self.tot_train_time = timedelta(seconds=0)
         self.run_path = run_path
         self.path = {
             "checkpoint": run_path / "checkpoint.pth",
-            "metrics": run_path / "metrics.csv",
             "predictions": run_path / "predictions.txt",
         }
+        metrics_path = run_path / "metrics"
+        metrics_path.mkdir(exist_ok=True)
+        self.train_loss_metric = AverageMetric(
+            self.rank, self.world_size, log_path=metrics_path / "train_loss.csv"
+        )
+        self.val_loss_metric = AverageMetric(
+            self.rank, self.world_size, log_path=metrics_path / "val_loss.csv"
+        )
 
-    def _print(self, string: str):
+    def print(self, string: str):
         if self.rank == 0:
             print(string)
 
     def save_ckpt(self):
         if self.rank == 0:
             train_time = timedelta(seconds=perf_counter() - self.start_train_time)
-
             state = {
                 "model": self.ddp_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
@@ -110,58 +115,47 @@ class Trainer:
         )
         return str(grad_update_time)[:-3], str(train_time)[:-3]
 
-    def _log_stats(self):
+    def _summary(self):
         grad_update_time, train_time = self._compute_elapsed_time()
 
         # metric compute method needs to be called by all processes
         train_loss = (
             self.train_loss_metric.compute() * self.config["grad_accumulation_steps"]
         )
-        if self.rank == 0:
-            with self.path["metrics"].open("a") as metrics_file:
-                fieldnames = [
-                    "grad_update_time/train_time",
-                    "tokens_processed",
-                    "train_loss",
-                    "lr",
-                ]
-                writer = csv.DictWriter(metrics_file, fieldnames=fieldnames)
-                writer.writerow(
-                    {
-                        "grad_update_time/train_time": f"{grad_update_time}/{train_time}",
-                        "tokens_processed": self.tokens_processed,
-                        "train_loss": train_loss,
-                        "lr": self.scheduler.get_last_lr()[0],
-                    }
-                )
-        self._print(
+        summary = (
             f"Time: {grad_update_time}/{train_time} - "
             f"Updates: {self.iterations//self.config['grad_accumulation_steps']:,} - "
             f"Tokens processed: {self.tokens_processed:,} - "
             f"Train Loss: {train_loss:.6f} - "
             f"LR: {self.scheduler.get_last_lr()[0]:E}"
         )
+        self.print(summary)
 
+    @torch.no_grad()
     def _log_preds(self, inputs: torch.Tensor):
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            logits = self.ddp_model(inputs, is_causal=True)
-        pred_token_ids = torch.argmax(logits, dim=-1)
-        preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
-        with self.path["predictions"].open("a") as preds_file:
-            preds_file.write(
-                "############# "
-                f"Iteration {self.iterations//self.config['grad_accumulation_steps']}"
-                " #############"
-                f"\n{preds}"
-            )
+        if self.rank == 0:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = self.ddp_model(inputs, is_causal=True)
+            pred_token_ids = torch.argmax(logits, dim=-1)
+            preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
+            with self.path["predictions"].open("a") as preds_file:
+                preds_file.write(
+                    "############# "
+                    f"Iteration {self.iterations//self.config['grad_accumulation_steps']}"
+                    " #############"
+                    f"\n{preds}\n"
+                )
+
+    def _log_stats(self):
+        self.train_loss_metric.log(self.iterations / self.config["grad_accumulation_steps"])
+        if self.iterations % self.config["validate_every_n_steps"] == 0:
+            self.val_loss_metric.log(self.iterations / self.config["grad_accumulation_steps"])
 
     def train(self):
         self.start_train_time = self.start_grad_update_time = perf_counter()
-        for _ in range(1):
+        while True:
             for token_ids in self.train_dataset:
                 self.iterations += 1
-                if self.iterations % (23 * self.config["grad_accumulation_steps"]) == 0:
-                    break
                 self.optimizer.zero_grad()
 
                 token_ids = token_ids.to(self.rank)
@@ -175,7 +169,16 @@ class Trainer:
                     self._update_grads(inputs, targets)
                     self._update_state()
 
-                    self._log_stats()
+                    self._summary()
+
+                if (
+                    self.iterations
+                    % (
+                        self.config["log_preds_every_n_steps"]
+                        * self.config["grad_accumulation_steps"]
+                    )
+                    == 0
+                ):
                     self._log_preds(inputs)
 
                 if (
@@ -186,7 +189,7 @@ class Trainer:
                     )
                     == 0
                 ):
-                    self._print("Saving checkpoint...")
+                    self.print("Saving checkpoint...")
                     self.save_ckpt()
 
                 if (
@@ -197,20 +200,32 @@ class Trainer:
                     )
                     == 0
                 ):
-                    self._print("Validating...")
+                    self.print("Validating...")
                     start_val_time = perf_counter()
-                    val_loss = self.validate()
-                    val_time = str(
-                        timedelta(seconds=perf_counter() - start_val_time())
-                    )[:-3]
-                    self._print(f"Time: {val_time} - Val Loss: {val_loss:.6f}")
+                    self.validate()
+                    val_time = str(timedelta(seconds=perf_counter() - start_val_time))[
+                        :-3
+                    ]
+                    val_loss = self.val_loss_metric.compute()
+                    self.print(f"Val Time: {val_time} - Val Loss: {val_loss}")
 
                 if self.iterations % self.config["grad_accumulation_steps"] == 0:
+                    self._log_stats()
                     self.start_grad_update_time = perf_counter()
+
+                if (
+                    self.iterations
+                    % (
+                        self.config["grad_accumulation_steps"]
+                        * self.config["reset_metrics_every_n_steps"]
+                    )
+                    == 0
+                ):
+                    self.train_loss_metric.reset()
 
     @torch.no_grad()
     def validate(self) -> float:
-        val_loss = AverageMetric(self.rank, self.world_size)
+        self.val_loss_metric.reset()
         for token_ids in self.val_dataset:
             token_ids = token_ids.to(self.rank)
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
@@ -219,5 +234,4 @@ class Trainer:
                 logits = self.ddp_model(inputs, is_causal=True)
                 loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
 
-            val_loss.update(loss.item())
-        return val_loss.compute()
+            self.val_loss_metric.update(loss.item())
