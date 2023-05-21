@@ -30,10 +30,10 @@ class FFN(nn.Sequential):
     def __init__(self, emb_dim: int, ffn_factor: int):
         super().__init__(
             nn.LayerNorm(emb_dim),
-            nn.Linear(emb_dim, emb_dim * ffn_factor),
+            nn.Linear(emb_dim, emb_dim * ffn_factor, bias=False),
             nn.ReLU(),
             nn.LayerNorm(emb_dim * ffn_factor),
-            nn.Linear(emb_dim * ffn_factor, emb_dim),
+            nn.Linear(emb_dim * ffn_factor, emb_dim, bias=False),
             nn.ReLU(),
         )
 

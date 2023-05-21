@@ -75,7 +75,7 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
-        shuffle=True
+        shuffle=True,
     )
     val_dataset = NextTokenDataset(
         split="val",
@@ -84,7 +84,7 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
-        max_examples=config["dataset"]["max_validation_examples"]
+        max_examples=config["dataset"]["max_validation_examples"],
     )
 
     model_config = PTRConfig(
@@ -95,6 +95,10 @@ def _main(rank, world_size, args, config, run_path):
         ffn_factor=config["model"]["ffn_factor"],
     )
     model = PTR(model_config)
+
+    if rank == 0:
+        print(f"# Parameters: {num_parameters(model):,}")
+
     model = model.to(rank)
     model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
