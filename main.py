@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import yaml
 import torch
+from torch import optim
+from torch.optim import lr_scheduler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed.optim import ZeroRedundancyOptimizer
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from transformers import AutoTokenizer
@@ -58,6 +59,10 @@ def cleanup():
     dist.destroy_process_group()
 
 
+def num_parameters(model: torch.nn.Module):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 def _main(rank, world_size, args, config, run_path):
     setup(rank, world_size, config)
 
@@ -70,6 +75,7 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
+        shuffle=True
     )
     val_dataset = NextTokenDataset(
         split="val",
@@ -78,6 +84,7 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
+        max_examples=config["dataset"]["max_validation_examples"]
     )
 
     model_config = PTRConfig(
@@ -92,20 +99,13 @@ def _main(rank, world_size, args, config, run_path):
     model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
 
-    if config["optimizer"]["ZeRO"]:
-        optimizer = ZeroRedundancyOptimizer(
-            ddp_model.parameters(),
-            optimizer_class=torch.optim.AdamW,
-            lr=config["scheduler"]["lr"],
-        )
-    else:
-        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
+    optimizer = optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
 
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
+    scheduler = lr_scheduler.SequentialLR(
         optimizer,
         [
-            torch.optim.lr_scheduler.ConstantLR(optimizer),
-            torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            lr_scheduler.ConstantLR(optimizer),
+            lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer,
                 T_0=config["scheduler"]["base_period"],
                 T_mult=config["scheduler"]["period_factor"],
@@ -126,7 +126,7 @@ def _main(rank, world_size, args, config, run_path):
         config=config["training"],
     )
     if args.resume_run_id:
-        trainer._print("Loading checkpoint...")
+        trainer.print("Loading checkpoint...")
         trainer.load_ckpt()
 
     trainer.train()
