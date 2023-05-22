@@ -45,6 +45,7 @@ class Trainer:
         self.path = {
             "checkpoint": run_path / "checkpoint.pth",
             "predictions": run_path / "predictions.txt",
+            "output": run_path / "output.txt",
         }
         metrics_path = run_path / "metrics"
         metrics_path.mkdir(exist_ok=True)
@@ -62,6 +63,8 @@ class Trainer:
     def print(self, string: str):
         if self.rank == 0:
             print(string)
+            with self.path["output"].open("a") as out_file:
+                out_file.write(string + "\n")
 
     def save_ckpt(self):
         if self.rank == 0:
