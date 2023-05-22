@@ -66,7 +66,7 @@ def num_parameters(model: torch.nn.Module):
 def _main(rank, world_size, args, config, run_path):
     setup(rank, world_size, config)
 
-    tokenizer = AutoTokenizer.from_pretrained("pierandom/ptr")
+    tokenizer = AutoTokenizer.from_pretrained(config["tokenizer"])
 
     train_dataset = NextTokenDataset(
         split="train",
