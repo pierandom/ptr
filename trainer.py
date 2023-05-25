@@ -100,7 +100,9 @@ class Trainer:
     ):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             logits = self.ddp_model(inputs, is_causal=True)
-            loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
+            loss = self.ddp_model.module.loss(
+                logits, targets, self.config["use_entropy_weights"]
+            )
             loss = loss / self.config["grad_accumulation_steps"]
 
         self.scaler.scale(loss).backward()
@@ -213,6 +215,8 @@ class Trainer:
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = self.ddp_model(inputs, is_causal=True)
-                loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
+                loss = self.ddp_model.module.loss(
+                    logits, targets, self.config["use_entropy_weights"]
+                )
 
             self.val_loss_metric.update(loss.item())

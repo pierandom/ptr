@@ -96,9 +96,6 @@ def _main(rank, world_size, args, config, run_path):
     )
     model = PTR(model_config)
 
-    if rank == 0:
-        print(f"# Parameters: {num_parameters(model):,}")
-
     model = model.to(rank)
     model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
@@ -133,6 +130,7 @@ def _main(rank, world_size, args, config, run_path):
         trainer.print("Loading checkpoint...")
         trainer.load_ckpt()
 
+    trainer.print(f"# Parameters: {num_parameters(model):,}")
     trainer.train()
 
 

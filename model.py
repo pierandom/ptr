@@ -79,3 +79,27 @@ class PTR(PreTrainedModel):
             emb = mha(emb, is_causal=is_causal)
         logits = self.out_proj(emb)
         return logits
+
+    def loss(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        use_entropy_weights: bool = False,
+    ) -> torch.Tensor:
+        log_probs = torch.log_softmax(logits, dim=-1)
+        log_probs = rearrange(log_probs, "b t c -> b c t")
+        if use_entropy_weights:
+            entropy = self.entropy(logits, targets)
+            log_probs = rearrange(entropy, "b t -> b 1 t") * log_probs
+        return F.nll_loss(log_probs, targets)
+
+    @torch.no_grad()
+    def entropy(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.softmax(logits, dim=-1)
+        eps = torch.finfo(logits.dtype).eps
+        entropy = -torch.sum(
+            probs * torch.log(torch.clamp(probs + eps, max=1)), dim=-1
+        ) / torch.log(torch.tensor(logits.shape[-1]))
+        preds = torch.argmax(logits, dim=-1)
+        entropy = torch.where(preds == targets, entropy, 1.0)
+        return entropy
