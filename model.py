@@ -42,21 +42,26 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, emb_dim: int, head_dim: int, ffn_factor: int):
         super().__init__()
         self.head_dim = head_dim
-        self.qk_proj = nn.Sequential(
-            nn.LayerNorm(head_dim), nn.Linear(head_dim, 2 * head_dim, bias=False)
+        self.qkv_proj = nn.Sequential(
+            nn.LayerNorm(head_dim), nn.Linear(head_dim, 3 * head_dim, bias=False), nn.ReLU(),
+        )
+        self.out_proj = nn.Sequential(
+            nn.LayerNorm(emb_dim), nn.Linear(emb_dim, emb_dim, bias=False), nn.ReLU(),
         )
         self.rotary = RotaryEmbedding(head_dim)
         self.ffn = FFN(emb_dim, ffn_factor)
 
     def forward(self, x: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
         x_head = rearrange(x, "b t (h d) -> b h t d", d=self.head_dim)
-        qk = self.qk_proj(x_head)
-        q, k = torch.chunk(qk, 2, dim=-1)
+        qkv = self.qkv_proj(x_head)
+        q, k, v = torch.chunk(qkv, 3, dim=-1)
         q = self.rotary.rotate_queries_or_keys(q)
         k = self.rotary.rotate_queries_or_keys(k)
-        attn = F.scaled_dot_product_attention(q, k, x_head, is_causal=is_causal)
+        attn = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
         attn = rearrange(attn, "b h t d -> b t (h d)")
-        return x + self.ffn(attn)
+        attn_out = self.out_proj(attn)
+        x_attn = x + attn_out
+        return x_attn + self.ffn(x_attn)
 
 
 class PTR(PreTrainedModel):
