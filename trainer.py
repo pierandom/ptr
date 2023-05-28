@@ -181,6 +181,9 @@ class Trainer:
                     self._update_state()
 
                     self._summary()
+                
+                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
+                    self.train_loss_metric.reset()
 
                 if self.grad_steps % self.config["log_preds_every_n_steps"] == 0:
                     self._log_preds(inputs)
@@ -203,8 +206,6 @@ class Trainer:
                     self._log_stats()
                     self.start_grad_update_time = perf_counter()
 
-                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
-                    self.train_loss_metric.reset()
 
     @torch.no_grad()
     def validate(self) -> float:

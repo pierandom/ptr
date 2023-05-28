@@ -126,11 +126,13 @@ def _main(rank, world_size, args, config, run_path):
         run_path=run_path,
         config=config["training"],
     )
+
     if args.resume_run_id:
         trainer.print("Loading checkpoint...")
         trainer.load_ckpt()
+    else:
+        trainer.print(f"# Parameters: {num_parameters(model):,}")
 
-    trainer.print(f"# Parameters: {num_parameters(model):,}")
     trainer.train()
 
 
