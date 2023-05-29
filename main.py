@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 import datetime
 
 from dataset import NextTokenDataset
-from model import PTR
+from model import PTR, PTRConfig
 from trainer import Trainer
 
 
@@ -66,7 +66,7 @@ def num_parameters(model: torch.nn.Module):
 def _main(rank, world_size, args, config, run_path):
     setup(rank, world_size, config)
 
-    tokenizer = AutoTokenizer.from_pretrained("pierandom/ptr")
+    tokenizer = AutoTokenizer.from_pretrained(config["tokenizer"])
 
     train_dataset = NextTokenDataset(
         split="train",
@@ -75,7 +75,7 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
-        shuffle=True
+        shuffle=True,
     )
     val_dataset = NextTokenDataset(
         split="val",
@@ -84,18 +84,19 @@ def _main(rank, world_size, args, config, run_path):
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
-        max_examples=config["dataset"]["max_validation_examples"]
+        max_examples=config["dataset"]["max_validation_examples"],
     )
 
-    model: torch.nn.Module = PTR(
+    model_config = PTRConfig(
         emb_dim=config["model"]["embedding_dim"],
         vocab_size=tokenizer.vocab_size,
         head_dim=config["model"]["head_dim"],
         num_attn_layers=config["model"]["num_attention_layers"],
         ffn_factor=config["model"]["ffn_factor"],
+        pos_encoding=config["model"]["pos_encoding"]
     )
-    if rank == 0:
-        print(f"# Parameters: {num_parameters(model):,}")
+    model = PTR(model_config)
+
     model = model.to(rank)
     model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
@@ -126,9 +127,12 @@ def _main(rank, world_size, args, config, run_path):
         run_path=run_path,
         config=config["training"],
     )
+
     if args.resume_run_id:
         trainer.print("Loading checkpoint...")
         trainer.load_ckpt()
+    else:
+        trainer.print(f"# Parameters: {num_parameters(model):,}")
 
     trainer.train()
 
@@ -151,8 +155,10 @@ if __name__ == "__main__":
     WORLD_SIZE = torch.cuda.device_count()
     try:
         mp.spawn(
-            main, args=(WORLD_SIZE, args, config, run_path), nprocs=WORLD_SIZE, join=True
+            main,
+            args=(WORLD_SIZE, args, config, run_path),
+            nprocs=WORLD_SIZE,
+            join=True,
         )
     except KeyboardInterrupt:
         print(f"Catching KeyboardInterrupt on main process. Terminating...")
-    

@@ -1,16 +1,13 @@
-import csv
 from pathlib import Path
 from time import perf_counter
 from datetime import timedelta
 from typing import Dict, Tuple
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import GradScaler
-from einops import rearrange
 
 from dataset import NextTokenDataset
 from metrics import AverageMetric
@@ -45,6 +42,7 @@ class Trainer:
         self.path = {
             "checkpoint": run_path / "checkpoint.pth",
             "predictions": run_path / "predictions.txt",
+            "output": run_path / "output.txt",
         }
         metrics_path = run_path / "metrics"
         metrics_path.mkdir(exist_ok=True)
@@ -62,6 +60,8 @@ class Trainer:
     def print(self, string: str):
         if self.rank == 0:
             print(string)
+            with self.path["output"].open("a") as out_file:
+                out_file.write(string + "\n")
 
     def save_ckpt(self):
         if self.rank == 0:
@@ -96,8 +96,12 @@ class Trainer:
         targets: torch.Tensor,
     ):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            logits = self.ddp_model(inputs, is_causal=True)
-            loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
+            logits = self.ddp_model(
+                inputs, is_causal=self.ddp_model.module.config.pos_encoding == "rotary"
+            )
+            loss = self.ddp_model.module.loss(
+                logits, targets, self.config["use_entropy_weights"]
+            )
             loss = loss / self.config["grad_accumulation_steps"]
 
         self.scaler.scale(loss).backward()
@@ -141,7 +145,10 @@ class Trainer:
     def _log_preds(self, inputs: torch.Tensor):
         if self.rank == 0:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                logits = self.ddp_model(inputs, is_causal=True)
+                logits = self.ddp_model(
+                    inputs,
+                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
+                )
             pred_token_ids = torch.argmax(logits, dim=-1)
             preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
             with self.path["predictions"].open("a") as preds_file:
@@ -177,6 +184,9 @@ class Trainer:
 
                     self._summary()
 
+                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
+                    self.train_loss_metric.reset()
+
                 if self.grad_steps % self.config["log_preds_every_n_steps"] == 0:
                     self._log_preds(inputs)
 
@@ -198,9 +208,6 @@ class Trainer:
                     self._log_stats()
                     self.start_grad_update_time = perf_counter()
 
-                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
-                    self.train_loss_metric.reset()
-
     @torch.no_grad()
     def validate(self) -> float:
         self.val_loss_metric.reset()
@@ -209,7 +216,10 @@ class Trainer:
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                logits = self.ddp_model(inputs, is_causal=True)
-                loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
+                logits = self.ddp_model(
+                    inputs,
+                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
+                )
+                loss = self.ddp_model.module.loss(logits, targets)
 
             self.val_loss_metric.update(loss.item())
