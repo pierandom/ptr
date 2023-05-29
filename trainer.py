@@ -202,7 +202,7 @@ class Trainer:
                         :-3
                     ]
                     val_loss = self.val_loss_metric.compute()
-                    self.print(f"Val Time: {val_time} - Val Loss: {val_loss}")
+                    self.print(f"Val Time: {val_time} - Val Loss: {val_loss:.6f}")
 
                 if self.iterations % self.config["grad_accumulation_steps"] == 0:
                     self._log_stats()

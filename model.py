@@ -107,7 +107,7 @@ class PTR(PreTrainedModel):
         mask = torch.tril(mask) + torch.triu(
             torch.inf * torch.ones(ctx_len, ctx_len), 1
         )
-        m = torch.pow(2, -1.0 * torch.arange(1, 1 + num_heads // 2, 0.5))
+        m = torch.pow(2, -1.0 * torch.arange(0, num_heads // 2, 0.5))
         scaled_mask = -1.0 * rearrange(m, "h -> 1 h 1 1") * rearrange(mask, "s t -> 1 1 s t")
         return scaled_mask.to(x)
 
