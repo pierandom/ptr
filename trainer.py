@@ -1,16 +1,13 @@
-import csv
 from pathlib import Path
 from time import perf_counter
 from datetime import timedelta
 from typing import Dict, Tuple
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import GradScaler
-from einops import rearrange
 
 from dataset import NextTokenDataset
 from metrics import AverageMetric
@@ -99,7 +96,9 @@ class Trainer:
         targets: torch.Tensor,
     ):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            logits = self.ddp_model(inputs, is_causal=True)
+            logits = self.ddp_model(
+                inputs, is_causal=self.ddp_model.module.config.pos_encoding == "rotary"
+            )
             loss = self.ddp_model.module.loss(
                 logits, targets, self.config["use_entropy_weights"]
             )
@@ -146,7 +145,10 @@ class Trainer:
     def _log_preds(self, inputs: torch.Tensor):
         if self.rank == 0:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                logits = self.ddp_model(inputs, is_causal=True)
+                logits = self.ddp_model(
+                    inputs,
+                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
+                )
             pred_token_ids = torch.argmax(logits, dim=-1)
             preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
             with self.path["predictions"].open("a") as preds_file:
@@ -181,7 +183,7 @@ class Trainer:
                     self._update_state()
 
                     self._summary()
-                
+
                 if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
                     self.train_loss_metric.reset()
 
@@ -206,7 +208,6 @@ class Trainer:
                     self._log_stats()
                     self.start_grad_update_time = perf_counter()
 
-
     @torch.no_grad()
     def validate(self) -> float:
         self.val_loss_metric.reset()
@@ -215,9 +216,10 @@ class Trainer:
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                logits = self.ddp_model(inputs, is_causal=True)
-                loss = self.ddp_model.module.loss(
-                    logits, targets
+                logits = self.ddp_model(
+                    inputs,
+                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
                 )
+                loss = self.ddp_model.module.loss(logits, targets)
 
             self.val_loss_metric.update(loss.item())

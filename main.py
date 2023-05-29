@@ -93,6 +93,7 @@ def _main(rank, world_size, args, config, run_path):
         head_dim=config["model"]["head_dim"],
         num_attn_layers=config["model"]["num_attention_layers"],
         ffn_factor=config["model"]["ffn_factor"],
+        pos_encoding=config["model"]["pos_encoding"]
     )
     model = PTR(model_config)
 
