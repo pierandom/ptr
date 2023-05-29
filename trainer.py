@@ -217,7 +217,7 @@ class Trainer:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = self.ddp_model(inputs, is_causal=True)
                 loss = self.ddp_model.module.loss(
-                    logits, targets, self.config["use_entropy_weights"]
+                    logits, targets
                 )
 
             self.val_loss_metric.update(loss.item())
