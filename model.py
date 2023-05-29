@@ -26,28 +26,35 @@ class PTRConfig(PretrainedConfig):
         self.ffn_factor = ffn_factor
 
 
+class SwiGLU(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.layer = nn.Sequential(
+            nn.LayerNorm(in_dim), nn.Linear(in_dim, 2 * out_dim, bias=False)
+        )
+
+    def forward(self, x):
+        x0, x1 = torch.chunk(self.layer(x), 2, dim=-1)
+        return F.silu(x0) * x1
+
+
 class FFN(nn.Sequential):
     def __init__(self, emb_dim: int, ffn_factor: int):
         super().__init__(
-            nn.LayerNorm(emb_dim),
-            nn.Linear(emb_dim, emb_dim * ffn_factor, bias=False),
-            nn.ReLU(),
-            nn.LayerNorm(emb_dim * ffn_factor),
-            nn.Linear(emb_dim * ffn_factor, emb_dim, bias=False),
-            nn.ReLU(),
+            SwiGLU(emb_dim, ffn_factor * emb_dim), SwiGLU(ffn_factor * emb_dim, emb_dim)
         )
+        self.emb_dim = emb_dim
+        self.ffn_factor = ffn_factor
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, emb_dim: int, head_dim: int, ffn_factor: int):
         super().__init__()
+        self.emb_dim = emb_dim
         self.head_dim = head_dim
-        self.qkv_proj = nn.Sequential(
-            nn.LayerNorm(head_dim), nn.Linear(head_dim, 3 * head_dim, bias=False), nn.ReLU(),
-        )
-        self.out_proj = nn.Sequential(
-            nn.LayerNorm(emb_dim), nn.Linear(emb_dim, emb_dim, bias=False), nn.ReLU(),
-        )
+        self.ffn_factor = ffn_factor
+        self.qkv_proj = SwiGLU(head_dim, 3 * head_dim)
+        self.out_proj = SwiGLU(emb_dim, emb_dim)
         self.rotary = RotaryEmbedding(head_dim)
         self.ffn = FFN(emb_dim, ffn_factor)
 
@@ -91,12 +98,15 @@ class PTR(PreTrainedModel):
         targets: torch.Tensor,
         use_entropy_weights: bool = False,
     ) -> torch.Tensor:
-        log_probs = torch.log_softmax(logits, dim=-1)
-        log_probs = rearrange(log_probs, "b t c -> b c t")
         if use_entropy_weights:
+            log_probs = torch.log_softmax(logits, dim=-1)
+            log_probs = rearrange(log_probs, "b t c -> b c t")
             entropy = self.entropy(logits, targets)
             log_probs = rearrange(entropy, "b t -> b 1 t") * log_probs
-        return F.nll_loss(log_probs, targets)
+            return F.nll_loss(log_probs, targets)
+        else:
+            # faster and use less memory
+            return F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
 
     @torch.no_grad()
     def entropy(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
