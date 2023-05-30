@@ -50,14 +50,32 @@ class FFN(nn.Sequential):
         self.ffn_factor = ffn_factor
 
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadProjection(nn.Module):
+    def __init__(self, num_heads: int, head_dim_in: int, head_dim_out: int):
+        super().__init__()
+        self.ln = nn.LayerNorm(head_dim_in)
+        init_tensor = torch.randn(
+            num_heads, head_dim_in, 2 * head_dim_out
+        ) / torch.sqrt(torch.tensor(head_dim_in))
+        self.mh_linear = nn.Parameter(init_tensor)
+
+    def forward(self, x: torch.Tensor):
+        x_norm = self.ln(x)
+        x_proj = torch.einsum("b h t d, h d k -> b h t k", x_norm, self.mh_linear)
+        x0, x1 = torch.chunk(x_proj, 2, dim=-1)
+        return F.silu(x0) * x1
+
+
+class MultiQueryAttention(nn.Module):
     def __init__(self, emb_dim: int, head_dim: int, ffn_factor: int, pos_encoding: str):
         super().__init__()
         self.emb_dim = emb_dim
         self.head_dim = head_dim
         self.ffn_factor = ffn_factor
         self.pos_encoding = pos_encoding
-        self.qkv_proj = SwiGLU(head_dim, 3 * head_dim)
+        num_heads = emb_dim // head_dim
+        self.q_proj = MultiHeadProjection(num_heads, head_dim, head_dim)
+        self.kv_proj = SwiGLU(head_dim, 2 * head_dim)
         self.out_proj = SwiGLU(emb_dim, emb_dim)
         self.ffn = FFN(emb_dim, ffn_factor)
         if self.pos_encoding == "rotary":
@@ -70,12 +88,15 @@ class MultiHeadAttention(nn.Module):
         is_causal: bool = False,
     ) -> torch.Tensor:
         x_head = rearrange(x, "b t (h d) -> b h t d", d=self.head_dim)
-        qkv = self.qkv_proj(x_head)
-        q, k, v = torch.chunk(qkv, 3, dim=-1)
+        q = self.q_proj(x_head)
+        kv = self.kv_proj(x_head)
+        k, v = torch.chunk(kv, 2, dim=-1)
         if self.pos_encoding == "rotary":
             q = self.rotary.rotate_queries_or_keys(q)
             k = self.rotary.rotate_queries_or_keys(k)
-        attn = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
+        attn = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, is_causal=is_causal
+        )
         attn = rearrange(attn, "b h t d -> b t (h d)")
         attn_out = self.out_proj(attn)
         x_attn = x + attn_out
@@ -90,7 +111,12 @@ class PTR(PreTrainedModel):
         self.embedding = nn.Embedding(config.vocab_size, config.emb_dim)
         self.mhas = nn.ModuleList(
             [
-                MultiHeadAttention(config.emb_dim, config.head_dim, config.ffn_factor, config.pos_encoding)
+                MultiQueryAttention(
+                    config.emb_dim,
+                    config.head_dim,
+                    config.ffn_factor,
+                    config.pos_encoding,
+                )
                 for _ in range(config.num_attn_layers)
             ]
         )
@@ -108,14 +134,16 @@ class PTR(PreTrainedModel):
             torch.inf * torch.ones(ctx_len, ctx_len), 1
         )
         m = torch.pow(2, -1.0 * torch.arange(0, num_heads // 2, 0.5))
-        scaled_mask = -1.0 * rearrange(m, "h -> 1 h 1 1") * rearrange(mask, "s t -> 1 1 s t")
+        scaled_mask = (
+            -1.0 * rearrange(m, "h -> 1 h 1 1") * rearrange(mask, "s t -> 1 1 s t")
+        )
         return scaled_mask.to(x)
 
     def forward(
         self,
         token_ids: torch.Tensor,
         is_causal: bool = False,
-        attn_mask: Optional[torch.Tensor] = None
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         emb = self.embedding(token_ids)
         if self.config.pos_encoding == "alibi":
