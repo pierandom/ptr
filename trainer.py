@@ -97,7 +97,9 @@ class Trainer:
     ):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             logits = self.ddp_model(
-                inputs, is_causal=self.ddp_model.module.config.pos_encoding == "rotary"
+                inputs,
+                is_causal=self.ddp_model.module.config.pos_encoding
+                in ["rotary", "lex_rotary"],
             )
             loss = self.ddp_model.module.loss(
                 logits, targets, self.config["use_entropy_weights"]
@@ -147,7 +149,8 @@ class Trainer:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = self.ddp_model(
                     inputs,
-                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
+                    is_causal=self.ddp_model.module.config.pos_encoding
+                    in ["rotary", "lex_rotary"],
                 )
             pred_token_ids = torch.argmax(logits, dim=-1)
             preds = self.train_dataset.tokenizer.decode(pred_token_ids[0])
@@ -218,7 +221,8 @@ class Trainer:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = self.ddp_model(
                     inputs,
-                    is_causal=self.ddp_model.module.config.pos_encoding == "rotary",
+                    is_causal=self.ddp_model.module.config.pos_encoding
+                    in ["rotary", "lex_rotary"],
                 )
                 loss = self.ddp_model.module.loss(logits, targets)
 
