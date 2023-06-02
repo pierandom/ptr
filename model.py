@@ -18,7 +18,7 @@ class PTRConfig(PretrainedConfig):
         num_attn_layers: int,
         ffn_factor: int,
         pos_encoding: str,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.emb_dim = emb_dim
@@ -66,6 +66,46 @@ class MultiHeadProjection(nn.Module):
         return F.silu(x0) * x1
 
 
+class LeXRotary(nn.Module):
+    """Length eXtrapolable positional embedding 
+    from paper https://arxiv.org/pdf/2212.10554v1.pdf
+    """
+
+    def __init__(self, head_dim: int):
+        super().__init__()
+        self.gamma = 1
+        range_tensor = torch.repeat_interleave(
+            torch.arange(head_dim // 2) / (head_dim // 2), repeats=2
+        ).view(1, 1, 1, head_dim)
+        self.register_buffer(
+            name="theta",
+            tensor=torch.pow(1 / 10_000, range_tensor),
+            persistent=False,
+        )
+        self.register_buffer(
+            name="zeta",
+            tensor=(range_tensor + self.gamma) / (1 + self.gamma),
+            persistent=False,
+        )
+        self.register_buffer(
+            name="rot", tensor=torch.tensor([[0.0, 1.0], [-1.0, 0.0]]), persistent=False
+        )
+
+    def rotate(self, x: torch.Tensor):
+        x_pairs = rearrange(x, "b h t (d p) -> b h t d p", p=2)
+        x_rotated = torch.matmul(x_pairs, self.rot)
+        return rearrange(x_rotated, "b h t d p -> b h t (d p)")
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor):
+        L = q.shape[-2]
+        pos = torch.arange(L).view(1, 1, L, 1).to(q)
+        cos = torch.cos(pos * self.theta)
+        sin = torch.sin(pos * self.theta)
+        q_rotated = (q * cos + self.rotate(q) * sin) * self.zeta
+        k_rotated = (k * cos + self.rotate(k) * sin) / self.zeta
+        return q_rotated, k_rotated
+
+
 class MultiQueryAttention(nn.Module):
     def __init__(self, emb_dim: int, head_dim: int, ffn_factor: int, pos_encoding: str):
         super().__init__()
@@ -80,6 +120,8 @@ class MultiQueryAttention(nn.Module):
         self.ffn = FFN(emb_dim, ffn_factor)
         if self.pos_encoding == "rotary":
             self.rotary = RotaryEmbedding(head_dim)
+        if self.pos_encoding == "lex_rotary":
+            self.lex_rotary = LeXRotary(head_dim)
 
     def forward(
         self,
@@ -94,12 +136,13 @@ class MultiQueryAttention(nn.Module):
         if self.pos_encoding == "rotary":
             q = self.rotary.rotate_queries_or_keys(q)
             k = self.rotary.rotate_queries_or_keys(k)
+        if self.pos_encoding == "lex_rotary":
+            q, k = self.lex_rotary(q, k)
         attn = F.scaled_dot_product_attention(
             q, k, v, attn_mask=attn_mask, is_causal=is_causal
         )
         attn = rearrange(attn, "b h t d -> b t (h d)")
-        attn_out = self.out_proj(attn)
-        x_attn = x + attn_out
+        x_attn = x + self.out_proj(attn)
         return x_attn + self.ffn(x_attn)
 
 

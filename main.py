@@ -98,7 +98,8 @@ def _main(rank, world_size, args, config, run_path):
     model = PTR(model_config)
 
     model = model.to(rank)
-    model = torch.compile(model)
+    if config["model"]["pos_encoding"] != "lex_rotary":
+        model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
 
     optimizer = optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
@@ -161,4 +162,4 @@ if __name__ == "__main__":
             join=True,
         )
     except KeyboardInterrupt:
-        print(f"Catching KeyboardInterrupt on main process. Terminating...")
+        print(f"\nCatching KeyboardInterrupt on main process. Terminating...")
