@@ -102,7 +102,10 @@ class Trainer:
                 in ["rotary", "lex_rotary"],
             )
             loss = self.ddp_model.module.loss(
-                logits, targets, self.config["use_entropy_weights"]
+                logits,
+                targets,
+                self.config["temperature"],
+                self.config["use_entropy_weights"],
             )
             loss = loss / self.config["grad_accumulation_steps"]
 
@@ -217,6 +220,7 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self) -> float:
+        self.ddp_model.eval()
         self.val_loss_metric.reset()
         for token_ids in self.val_dataset:
             token_ids = token_ids.to(self.rank)

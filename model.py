@@ -18,6 +18,8 @@ class PTRConfig(PretrainedConfig):
         num_attn_layers: int,
         ffn_factor: int,
         pos_encoding: str,
+        dropout_p: float,
+        attention_heads_type: str,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -27,6 +29,8 @@ class PTRConfig(PretrainedConfig):
         self.num_attn_layers = num_attn_layers
         self.ffn_factor = ffn_factor
         self.pos_encoding = pos_encoding
+        self.dropout_p = dropout_p
+        self.attention_heads_type = attention_heads_type
 
 
 class SwiGLU(nn.Module):
@@ -67,7 +71,7 @@ class MultiHeadProjection(nn.Module):
 
 
 class LeXRotary(nn.Module):
-    """Length eXtrapolable positional embedding 
+    """Length eXtrapolable positional embedding
     from paper https://arxiv.org/pdf/2212.10554v1.pdf
     """
 
@@ -106,22 +110,45 @@ class LeXRotary(nn.Module):
         return q_rotated, k_rotated
 
 
-class MultiQueryAttention(nn.Module):
-    def __init__(self, emb_dim: int, head_dim: int, ffn_factor: int, pos_encoding: str):
+class MultiHeadAttention(nn.Module):
+    def __init__(
+        self,
+        emb_dim: int,
+        head_dim: int,
+        ffn_factor: int,
+        pos_encoding: str,
+        dropout_p: float,
+        attention_heads_type: str,
+    ):
         super().__init__()
         self.emb_dim = emb_dim
         self.head_dim = head_dim
         self.ffn_factor = ffn_factor
         self.pos_encoding = pos_encoding
+        self.dropout_p = dropout_p
+        self.attention_heads_type = attention_heads_type
         num_heads = emb_dim // head_dim
-        self.q_proj = MultiHeadProjection(num_heads, head_dim, head_dim)
-        self.kv_proj = SwiGLU(head_dim, 2 * head_dim)
+        match attention_heads_type:
+            case "simple":
+                self.qkv_proj = SwiGLU(head_dim, 3 * head_dim)
+            case "multi_query":
+                self.q_proj = MultiHeadProjection(num_heads, head_dim, head_dim)
+                self.kv_proj = SwiGLU(head_dim, 2 * head_dim)
+            case "classic":
+                self.qkv_proj = MultiHeadProjection(num_heads, head_dim, 3 * head_dim)
+            case _:
+                raise ValueError(attention_heads_type)
         self.out_proj = SwiGLU(emb_dim, emb_dim)
         self.ffn = FFN(emb_dim, ffn_factor)
-        if self.pos_encoding == "rotary":
-            self.rotary = RotaryEmbedding(head_dim)
-        if self.pos_encoding == "lex_rotary":
-            self.lex_rotary = LeXRotary(head_dim)
+        match pos_encoding:
+            case "rotary":
+                self.rotary = RotaryEmbedding(head_dim)
+            case "lex_rotary":
+                self.lex_rotary = LeXRotary(head_dim)
+            case "alibi":
+                pass
+            case _:
+                raise ValueError(pos_encoding)
 
     def forward(
         self,
@@ -130,16 +157,29 @@ class MultiQueryAttention(nn.Module):
         is_causal: bool = False,
     ) -> torch.Tensor:
         x_head = rearrange(x, "b t (h d) -> b h t d", d=self.head_dim)
-        q = self.q_proj(x_head)
-        kv = self.kv_proj(x_head)
-        k, v = torch.chunk(kv, 2, dim=-1)
-        if self.pos_encoding == "rotary":
-            q = self.rotary.rotate_queries_or_keys(q)
-            k = self.rotary.rotate_queries_or_keys(k)
-        if self.pos_encoding == "lex_rotary":
-            q, k = self.lex_rotary(q, k)
+        match self.attention_heads_type:
+            case "simple" | "classic":
+                qkv = self.qkv_proj(x_head)
+                q, k, v = torch.chunk(qkv, 3, dim=-1)
+            case "multi_query":
+                q = self.q_proj(x_head)
+                kv = self.kv_proj(x_head)
+                k, v = torch.chunk(kv, 2, dim=-1)
+        match self.pos_encoding:
+            case "rotary":
+                q = self.rotary.rotate_queries_or_keys(q)
+                k = self.rotary.rotate_queries_or_keys(k)
+            case "lex_rotary":
+                q, k = self.lex_rotary(q, k)
+            case "alibi":
+                pass
         attn = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=is_causal
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            is_causal=is_causal,
+            dropout_p=self.dropout_p if self.training else 0,
         )
         attn = rearrange(attn, "b h t d -> b t (h d)")
         x_attn = x + self.out_proj(attn)
@@ -154,11 +194,13 @@ class PTR(PreTrainedModel):
         self.embedding = nn.Embedding(config.vocab_size, config.emb_dim)
         self.mhas = nn.ModuleList(
             [
-                MultiQueryAttention(
-                    config.emb_dim,
-                    config.head_dim,
-                    config.ffn_factor,
-                    config.pos_encoding,
+                MultiHeadAttention(
+                    emb_dim=config.emb_dim,
+                    head_dim=config.head_dim,
+                    ffn_factor=config.ffn_factor,
+                    pos_encoding=config.pos_encoding,
+                    dropout_p=config.dropout_p,
+                    attention_heads_type=config.attention_heads_type,
                 )
                 for _ in range(config.num_attn_layers)
             ]
@@ -200,8 +242,10 @@ class PTR(PreTrainedModel):
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
+        temperature: float = 1.0,
         use_entropy_weights: bool = False,
     ) -> torch.Tensor:
+        logits = logits / temperature
         if use_entropy_weights:
             log_probs = torch.log_softmax(logits, dim=-1)
             log_probs = rearrange(log_probs, "b t c -> b c t")
