@@ -119,6 +119,7 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
+        self.optimizer.zero_grad()
 
     def _compute_elapsed_time(self) -> Tuple[str, str]:
         """Compute time elapsed since last grad update and from the training start in milliseconds."""
@@ -169,47 +170,50 @@ class Trainer:
 
     def train(self):
         self.start_train_time = self.start_grad_update_time = perf_counter()
-        while True:
-            for token_ids in self.train_dataset:
-                self.iterations += 1
-                self.optimizer.zero_grad()
+        train_iter = iter(self.train_dataset)
+        self.tokens_processed = 0
+        while self.tokens_processed < self.config["max_tokens_processed"]:
+            self.ddp_model.train()
 
-                token_ids = token_ids.to(self.rank)
-                inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
-                self.tokens_processed += inputs.numel()
+            token_ids = next(train_iter)
+            self.iterations += 1
 
-                if self.iterations % self.config["grad_accumulation_steps"] != 0:
-                    with self.ddp_model.no_sync():
-                        self._update_grads(inputs, targets)
-                else:
+            token_ids = token_ids.to(self.rank)
+            inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
+            self.tokens_processed += inputs.numel()
+
+            if self.iterations % self.config["grad_accumulation_steps"] != 0:
+                with self.ddp_model.no_sync():
                     self._update_grads(inputs, targets)
-                    self._update_state()
+            else:
+                self._update_grads(inputs, targets)
+                self._update_state()
 
-                    self._summary()
+                self._summary()
 
-                if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
-                    self.train_loss_metric.reset()
+            if self.grad_steps % self.config["reset_metrics_every_n_steps"] == 0:
+                self.train_loss_metric.reset()
 
-                if self.grad_steps % self.config["log_preds_every_n_steps"] == 0:
-                    self._log_preds(inputs)
+            if self.grad_steps % self.config["log_preds_every_n_steps"] == 0:
+                self._log_preds(inputs)
 
-                if self.grad_steps % self.config["save_every_n_steps"] == 0:
-                    self.print("Saving checkpoint...")
-                    self.save_ckpt()
+            if self.grad_steps % self.config["save_every_n_steps"] == 0:
+                self.print("Saving checkpoint...")
+                self.save_ckpt()
 
-                if self.grad_steps % self.config["validate_every_n_steps"] == 0:
-                    self.print("Validating...")
-                    start_val_time = perf_counter()
-                    self.validate()
-                    val_time = str(timedelta(seconds=perf_counter() - start_val_time))[
-                        :-3
-                    ]
-                    val_loss = self.val_loss_metric.compute()
-                    self.print(f"Val Time: {val_time} - Val Loss: {val_loss:.6f}")
+            if self.grad_steps % self.config["validate_every_n_steps"] == 0:
+                self.print("Validating...")
+                start_val_time = perf_counter()
+                self.validate()
+                val_time = str(timedelta(seconds=perf_counter() - start_val_time))[
+                    :-3
+                ]
+                val_loss = self.val_loss_metric.compute()
+                self.print(f"Val Time: {val_time} - Val Loss: {val_loss:.6f}")
 
-                if self.iterations % self.config["grad_accumulation_steps"] == 0:
-                    self._log_stats()
-                    self.start_grad_update_time = perf_counter()
+            if self.iterations % self.config["grad_accumulation_steps"] == 0:
+                self._log_stats()
+                self.start_grad_update_time = perf_counter()
 
     @torch.no_grad()
     def validate(self) -> float:
