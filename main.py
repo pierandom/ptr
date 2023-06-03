@@ -104,16 +104,25 @@ def _main(rank, world_size, args, config, run_path):
         model = torch.compile(model)
     ddp_model = DDP(model, device_ids=[rank])
 
-    optimizer = optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["lr"])
+    optimizer = optim.AdamW(ddp_model.parameters(), lr=config["scheduler"]["start_lr"])
 
+    tokens_per_update = (
+        config["dataset"]["batch_size"]
+        * (config["dataset"]["context_len"] - 1)
+        * config["training"]["grad_accumulation_steps"]
+    )
+    cosine_annealing_steps = int(
+        config["training"]["max_tokens_processed"] / tokens_per_update
+        - config["scheduler"]["warmup_steps"]
+    ) + 1
     scheduler = lr_scheduler.SequentialLR(
         optimizer,
         [
             lr_scheduler.ConstantLR(optimizer),
-            lr_scheduler.CosineAnnealingWarmRestarts(
+            lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_0=config["scheduler"]["base_period"],
-                T_mult=config["scheduler"]["period_factor"],
+                eta_min=config["scheduler"]["end_lr"],
+                T_max=cosine_annealing_steps,
             ),
         ],
         milestones=[config["scheduler"]["warmup_steps"]],
