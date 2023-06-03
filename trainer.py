@@ -183,7 +183,7 @@ class Trainer:
 
             token_ids = token_ids.to(self.rank)
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
-            self.tokens_processed += inputs.numel()
+            self.tokens_processed += self.world_size * inputs.numel()
 
             if self.iterations % self.config["grad_accumulation_steps"] != 0:
                 with self.ddp_model.no_sync():
@@ -208,9 +208,7 @@ class Trainer:
                 self.print("Validating...")
                 start_val_time = perf_counter()
                 self.validate()
-                val_time = str(timedelta(seconds=perf_counter() - start_val_time))[
-                    :-3
-                ]
+                val_time = str(timedelta(seconds=perf_counter() - start_val_time))[:-3]
                 val_loss = self.val_loss_metric.compute()
                 self.print(f"Val Time: {val_time} - Val Loss: {val_loss:.6f}")
 
