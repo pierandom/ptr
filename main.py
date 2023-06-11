@@ -16,6 +16,8 @@ import datetime
 from dataset import NextTokenDataset
 from model import PTR, PTRConfig
 from trainer import Trainer
+from metrics import AverageMetric
+
 
 
 def parse_args():
@@ -86,6 +88,14 @@ def _main(rank, world_size, args, config, run_path):
         context_len=config["dataset"]["context_len"],
         max_examples=config["dataset"]["max_validation_examples"],
     )
+    test_dataset = NextTokenDataset(
+        split="test",
+        rank=rank,
+        world_size=world_size,
+        tokenizer=tokenizer,
+        batch_size=config["dataset"]["batch_size"],
+        context_len=config["dataset"]["context_len"],
+    )
 
     model_config = PTRConfig(
         emb_dim=config["model"]["embedding_dim"],
@@ -147,7 +157,7 @@ def _main(rank, world_size, args, config, run_path):
         trainer.print(f"# Parameters: {num_parameters(model):,}")
 
     trainer.train()
-
+    trainer.eval_with_summary(test_dataset)
 
 def main(rank, *args, **kwargs):
     try:

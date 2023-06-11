@@ -52,6 +52,7 @@ class Trainer:
         self.val_loss_metric = AverageMetric(
             self.rank, self.world_size, log_path=metrics_path / "val_loss.csv"
         )
+        self.test_loss_metric = AverageMetric(self.rank, self.world_size, log_path=metrics_path / "val_loss.csv")
 
     @property
     def grad_steps(self):
@@ -205,22 +206,17 @@ class Trainer:
                 self.save_ckpt()
 
             if self.grad_steps % self.config["validate_every_n_steps"] == 0:
-                self.print("Validating...")
-                start_val_time = perf_counter()
-                self.validate()
-                val_time = str(timedelta(seconds=perf_counter() - start_val_time))[:-3]
-                val_loss = self.val_loss_metric.compute()
-                self.print(f"Val Time: {val_time} - Val Loss: {val_loss:.6f}")
+                self.eval_with_summary(self.val_dataset)
 
             if self.iterations % self.config["grad_accumulation_steps"] == 0:
                 self._log_stats()
                 self.start_grad_update_time = perf_counter()
 
     @torch.no_grad()
-    def validate(self) -> float:
+    def eval(self, dataset: NextTokenDataset, loss_metric: AverageMetric) -> float:
         self.ddp_model.eval()
-        self.val_loss_metric.reset()
-        for token_ids in self.val_dataset:
+        loss_metric.reset()
+        for token_ids in dataset:
             token_ids = token_ids.to(self.rank)
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
 
@@ -232,4 +228,20 @@ class Trainer:
                 )
                 loss = self.ddp_model.module.loss(logits, targets)
 
-            self.val_loss_metric.update(loss.item())
+            loss_metric.update(loss.item())
+        return loss_metric.compute()
+
+    def eval_with_summary(self, dataset: NextTokenDataset):
+        if dataset.split == "val":
+            self.print("Validating...")
+            loss_metric = self.val_loss_metric
+        elif dataset.split == "test":
+            self.print("Testing...")
+            loss_metric = self.test_loss_metric
+        start_eval_time = perf_counter()
+        loss = self.eval(dataset, loss_metric)
+        eval_time = str(timedelta(seconds=perf_counter() - start_eval_time))[:-3]
+        if dataset.split == "val":
+            self.print(f"Val Time: {eval_time} - Val Loss: {loss:.6f}")
+        elif dataset.split == "test":
+            self.print(f"Test time: {eval_time} - Test Loss: {loss:.6f}")
