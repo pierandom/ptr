@@ -19,7 +19,6 @@ from trainer import Trainer
 from metrics import AverageMetric
 
 
-
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--resume_run_id", type=str, help="Run id to resume")
@@ -106,6 +105,7 @@ def _main(rank, world_size, args, config, run_path):
         pos_encoding=config["model"]["pos_encoding"],
         dropout_p=config["model"]["dropout_p"],
         attention_heads_type=config["model"]["attention_heads_type"],
+        is_parallel_attn=config["model"]["is_parallel_attn"],
     )
     model = PTR(model_config)
 
@@ -121,10 +121,13 @@ def _main(rank, world_size, args, config, run_path):
         * (config["dataset"]["context_len"] - 1)
         * config["training"]["grad_accumulation_steps"]
     )
-    cosine_annealing_steps = int(
-        config["training"]["max_tokens_processed"] / tokens_per_update
-        - config["scheduler"]["warmup_steps"]
-    ) + 1
+    cosine_annealing_steps = (
+        int(
+            config["training"]["max_tokens_processed"] / tokens_per_update
+            - config["scheduler"]["warmup_steps"]
+        )
+        + 1
+    )
     scheduler = lr_scheduler.SequentialLR(
         optimizer,
         [
@@ -158,6 +161,7 @@ def _main(rank, world_size, args, config, run_path):
 
     trainer.train()
     trainer.eval_with_summary(test_dataset)
+
 
 def main(rank, *args, **kwargs):
     try:

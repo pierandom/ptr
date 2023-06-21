@@ -20,6 +20,7 @@ class PTRConfig(PretrainedConfig):
         pos_encoding: str,
         dropout_p: float,
         attention_heads_type: str,
+        is_parallel_attn: bool,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -31,6 +32,7 @@ class PTRConfig(PretrainedConfig):
         self.pos_encoding = pos_encoding
         self.dropout_p = dropout_p
         self.attention_heads_type = attention_heads_type
+        self.is_parallel_attn = is_parallel_attn
 
 
 class SwiGLU(nn.Module):
@@ -119,6 +121,7 @@ class MultiHeadAttention(nn.Module):
         pos_encoding: str,
         dropout_p: float,
         attention_heads_type: str,
+        is_parallel_attn: bool
     ):
         super().__init__()
         self.emb_dim = emb_dim
@@ -127,6 +130,7 @@ class MultiHeadAttention(nn.Module):
         self.pos_encoding = pos_encoding
         self.dropout_p = dropout_p
         self.attention_heads_type = attention_heads_type
+        self.is_parallel_attn = is_parallel_attn
         num_heads = emb_dim // head_dim
         match attention_heads_type:
             case "simple":
@@ -182,8 +186,11 @@ class MultiHeadAttention(nn.Module):
             dropout_p=self.dropout_p if self.training else 0,
         )
         attn = rearrange(attn, "b h t d -> b t (h d)")
-        x_attn = x + self.out_proj(attn)
-        return x_attn + self.ffn(x_attn)
+        if self.is_parallel_attn:
+            return x + self.out_proj(attn) + self.ffn(x)
+        else:
+            x_attn = x + self.out_proj(attn)
+            return x_attn + self.ffn(x_attn)
 
 
 class PTR(PreTrainedModel):
@@ -201,6 +208,7 @@ class PTR(PreTrainedModel):
                     pos_encoding=config.pos_encoding,
                     dropout_p=config.dropout_p,
                     attention_heads_type=config.attention_heads_type,
+                    is_parallel_attn=config.is_parallel_attn
                 )
                 for _ in range(config.num_attn_layers)
             ]
@@ -246,22 +254,18 @@ class PTR(PreTrainedModel):
         use_entropy_weights: bool = False,
     ) -> torch.Tensor:
         logits = logits / temperature
+        loss = F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets, reduction="none")
         if use_entropy_weights:
-            log_probs = torch.log_softmax(logits, dim=-1)
-            log_probs = rearrange(log_probs, "b t c -> b c t")
             entropy = self.entropy(logits, targets)
-            log_probs = rearrange(entropy, "b t -> b 1 t") * log_probs
-            return F.nll_loss(log_probs, targets)
-        else:
-            # faster and use less memory
-            return F.cross_entropy(rearrange(logits, "b t c -> b c t"), targets)
+            loss = entropy * loss
+        return loss.mean()
 
     @torch.no_grad()
     def entropy(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.softmax(logits, dim=-1)
         eps = torch.finfo(logits.dtype).eps
         entropy = -torch.sum(
-            probs * torch.log(torch.clamp(probs + eps, max=1)), dim=-1
+            probs * torch.log(probs.clamp(min=eps)), dim=-1
         ) / torch.log(torch.tensor(logits.shape[-1]))
         preds = torch.argmax(logits, dim=-1)
         entropy = torch.where(preds == targets, entropy, 1.0)
