@@ -16,7 +16,7 @@ import datetime
 from dataset import NextTokenDataset
 from model import PTR, PTRConfig
 from trainer import Trainer
-from metrics import AverageMetric
+from tiny_stories_dataset import TinyStoriesDataset
 
 
 def parse_args():
@@ -69,7 +69,7 @@ def _main(rank, world_size, args, config, run_path):
 
     tokenizer = AutoTokenizer.from_pretrained(config["tokenizer"])
 
-    train_dataset = NextTokenDataset(
+    train_dataset = TinyStoriesDataset(
         split="train",
         rank=rank,
         world_size=world_size,
@@ -78,23 +78,23 @@ def _main(rank, world_size, args, config, run_path):
         context_len=config["dataset"]["context_len"],
         shuffle=True,
     )
-    val_dataset = NextTokenDataset(
-        split="val",
+    val_dataset = TinyStoriesDataset(
+        split="valid",
         rank=rank,
         world_size=world_size,
         tokenizer=tokenizer,
         batch_size=config["dataset"]["batch_size"],
         context_len=config["dataset"]["context_len"],
-        max_examples=config["dataset"]["max_validation_examples"],
+        # max_examples=config["dataset"]["max_validation_examples"],
     )
-    test_dataset = NextTokenDataset(
-        split="test",
-        rank=rank,
-        world_size=world_size,
-        tokenizer=tokenizer,
-        batch_size=config["dataset"]["batch_size"],
-        context_len=config["dataset"]["context_len"],
-    )
+    # test_dataset = NextTokenDataset(
+    #     split="test",
+    #     rank=rank,
+    #     world_size=world_size,
+    #     tokenizer=tokenizer,
+    #     batch_size=config["dataset"]["batch_size"],
+    #     context_len=config["dataset"]["context_len"],
+    # )
 
     model_config = PTRConfig(
         emb_dim=config["model"]["embedding_dim"],
@@ -160,7 +160,7 @@ def _main(rank, world_size, args, config, run_path):
         trainer.print(f"# Parameters: {num_parameters(model):,}")
 
     trainer.train()
-    trainer.eval_with_summary(test_dataset)
+    # trainer.eval_with_summary(test_dataset)
 
 
 def main(rank, *args, **kwargs):
