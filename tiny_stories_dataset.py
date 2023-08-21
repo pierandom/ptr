@@ -21,6 +21,13 @@ class TinyStoriesDataset(IterableDataset):
         self.batch_size = batch_size
         self.tokenizer = tokenizer
         self.shuffle = shuffle
+        self.state = {}
+
+    def state_dict(self):
+        return self.state
+
+    def load_state_dict(self, state):
+        self.state = state
 
     def examples(self):
         token_ids = []

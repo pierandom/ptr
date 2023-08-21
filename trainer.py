@@ -178,10 +178,12 @@ class Trainer:
         self.tokens_processed = 0
         while self.tokens_processed < self.config["max_tokens_processed"]:
             self.ddp_model.train()
-
-            token_ids = next(train_iter)
+            try:
+                token_ids = next(train_iter)
+            except StopIteration:
+                train_iter = iter(self.train_dataset)
+                token_ids = next(train_iter)
             self.iterations += 1
-
             token_ids = token_ids.to(self.rank)
             inputs, targets = token_ids[:, :-1], token_ids[:, 1:]
             self.tokens_processed += self.world_size * inputs.numel()
@@ -232,7 +234,7 @@ class Trainer:
         return loss_metric.compute()
 
     def eval_with_summary(self, dataset: NextTokenDataset):
-        if dataset.split == "val":
+        if dataset.split.startswith("val"):
             self.print("Validating...")
             loss_metric = self.val_loss_metric
         elif dataset.split == "test":
@@ -241,7 +243,7 @@ class Trainer:
         start_eval_time = perf_counter()
         loss = self.eval(dataset, loss_metric)
         eval_time = str(timedelta(seconds=perf_counter() - start_eval_time))[:-3]
-        if dataset.split == "val":
+        if dataset.split.startswith("val"):
             self.print(f"Val Time: {eval_time} - Val Loss: {loss:.6f}")
         elif dataset.split == "test":
             self.print(f"Test time: {eval_time} - Test Loss: {loss:.6f}")
